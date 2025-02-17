@@ -33,6 +33,7 @@ from utils.augmentations import (
     classify_transforms,
     copy_paste,
     letterbox,
+    letterbox_numpy,
     mixup,
     random_perspective,
 )
@@ -61,6 +62,7 @@ from utils.torch_utils import torch_distributed_zero_first
 HELP_URL = "See https://docs.ultralytics.com/yolov5/tutorials/train_custom_data"
 IMG_FORMATS = "bmp", "dng", "jpeg", "jpg", "mpo", "png", "tif", "tiff", "webp", "pfm"  # include image suffixes
 VID_FORMATS = "asf", "avi", "gif", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "ts", "wmv"  # include video suffixes
+DEPTH_FORMATS = "npy" # include video suffixes
 LOCAL_RANK = int(os.getenv("LOCAL_RANK", -1))  # https://pytorch.org/docs/stable/elastic/run.html
 RANK = int(os.getenv("RANK", -1))
 WORLD_SIZE = int(os.getenv("WORLD_SIZE", 1))
@@ -404,6 +406,134 @@ class LoadImages:
             im = np.ascontiguousarray(im)  # contiguous
 
         return path, im, im0, self.cap, s
+
+    def _new_video(self, path):
+        """Initializes a new video capture object with path, frame count adjusted by stride, and orientation
+        metadata.
+        """
+        self.frame = 0
+        self.cap = cv2.VideoCapture(path)
+        self.frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT) / self.vid_stride)
+        self.orientation = int(self.cap.get(cv2.CAP_PROP_ORIENTATION_META))  # rotation degrees
+        # self.cap.set(cv2.CAP_PROP_ORIENTATION_AUTO, 0)  # disable https://github.com/ultralytics/yolov5/issues/8493
+
+    def _cv2_rotate(self, im):
+        """Rotates a cv2 image based on its orientation; supports 0, 90, and 180 degrees rotations."""
+        if self.orientation == 0:
+            return cv2.rotate(im, cv2.ROTATE_90_CLOCKWISE)
+        elif self.orientation == 180:
+            return cv2.rotate(im, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        elif self.orientation == 90:
+            return cv2.rotate(im, cv2.ROTATE_180)
+        return im
+
+    def __len__(self):
+        """Returns the number of files in the dataset."""
+        return self.nf  # number of files
+
+class LoadNumpy:
+    """YOLOv5 image/video dataloader, i.e. `python detect.py --source image.jpg/vid.mp4`."""
+
+    def __init__(self, img_path, depth_path, img_size=640, stride=32, auto=True, transforms=None, vid_stride=1):
+        """Initializes YOLOv5 loader for images/videos, supporting glob patterns, directories, and lists of paths."""
+
+        img_files = []
+        for p in sorted(img_path) if isinstance(img_path, (list, tuple)) else [img_path]:
+            p = str(Path(p).resolve())
+            if "*" in p:
+                img_files.extend(sorted(glob.glob(p, recursive=True)))  # glob
+            elif os.path.isdir(p):
+                img_files.extend(sorted(glob.glob(os.path.join(p, "*.*"))))  # dir
+            elif os.path.isfile(p):
+                img_files.append(p)  # files
+            else:
+                raise FileNotFoundError(f"{p} does not exist")
+            
+
+        depth_files = []
+        for p in sorted(depth_path) if isinstance(depth_path, (list, tuple)) else [depth_path]:
+            p = str(Path(p).resolve())
+            if "*" in p:
+                depth_files.extend(sorted(glob.glob(p, recursive=True)))  # glob
+            elif os.path.isdir(p):
+                depth_files.extend(sorted(glob.glob(os.path.join(p, "*.*"))))  # dir
+            elif os.path.isfile(p):
+                depth_files.append(p)  # files
+            else:
+                raise FileNotFoundError(f"{p} does not exist")
+            
+
+        images = [x for x in img_path if x.split(".")[-1].lower() in IMG_FORMATS]
+        distances = [x for x in depth_path if x.split(".")[-1].lower() in DEPTH_FORMATS]
+        ni, nv = len(images), len(distances)
+
+        if(ni == nv):
+            self.nf = nv
+        elif(ni > nv):
+            self.nf = nv
+        else:
+            self.nf = ni
+
+        self.img_size = img_size
+        self.stride = stride
+        self.im_files = images
+        self.dis_files = distances
+        self.video_flag = [False] * ni + [True] * nv
+        self.mode = "image"
+        self.auto = auto
+        self.transforms = transforms  # optional
+        self.vid_stride = vid_stride  # video frame-rate stride
+        self.cap = None
+
+        assert self.nf > 0, (
+            f"No images or videos found in {p}. Supported formats are:\nimages: {IMG_FORMATS}\nvideos: {VID_FORMATS}"
+        )
+
+    def __iter__(self):
+        """Initializes iterator by resetting count and returns the iterator object itself."""
+        self.count = 0
+        return self
+
+    def __next__(self):
+        """Advances to the next file in the dataset, raising StopIteration if at the end."""
+        if self.count == self.nf:
+            raise StopIteration
+        im_path = self.im_files[self.count]
+        dis_path = self.dis_files[self.count]
+
+        im_name = os.path.splitext(os.path.basename(im_path))[0]
+        dis_name = os.path.splitext(os.path.basename(dis_path))[0]
+
+        assert im_name == dis_name, f"Filename mismatch: {im_name} != {dis_name}"
+            
+        # Read image
+        self.count += 1
+        im0 = cv2.imread(im_path)  # BGR
+        assert im0 is not None, f"Image Not Found {im_path}"
+        s = f"image {self.count}/{self.nf} {im_path}: "
+
+        depth0 = np.load(dis_path)  # BGR
+        assert depth0 is not None, f"Distance Not Found {dis_path}"
+        d = f"image {self.count}/{self.nf} {dis_path}: "
+
+        if depth0.shape[:2] != im0.shape[:2]:
+            depth0 = cv2.resize(depth0, (im0.shape[1], im0.shape[0]))
+
+            # If depth is single-channel, add an axis to match BGR channels
+        if len(depth0.shape) == 2:
+            depth0 = np.expand_dims(depth0, axis=-1)  # Convert (H, W) -> (H, W, 1)
+
+            # Concatenate depth as the fourth channel
+        bgrd = np.concatenate((im0, depth0), axis=-1)
+
+        if self.transforms:
+            bgrd_trans = self.transforms(bgrd)  # transforms
+        else:
+            bgrd_trans = letterbox_numpy(bgrd, self.img_size, stride=self.stride, auto=self.auto)[0]  # padded resize
+            bgrd_trans = bgrd_trans.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
+            bgrd_trans = np.ascontiguousarray(bgrd_trans)  # contiguous
+
+        return im_path, dis_path, bgrd_trans, bgrd, self.cap, s, d
 
     def _new_video(self, path):
         """Initializes a new video capture object with path, frame count adjusted by stride, and orientation

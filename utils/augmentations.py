@@ -152,6 +152,49 @@ def letterbox(im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleF
     return im, ratio, (dw, dh)
 
 
+def letterbox_numpy(bgrd, new_shape=(640, 640), color=(114, 114, 114, 0), auto=True, scaleFill=False, scaleup=True, stride=32):
+    """Resizes and pads a 4-channel (BGRD) image to new_shape while maintaining aspect ratio."""
+    
+    shape = bgrd.shape[:2]  # current shape [height, width]
+    
+    if isinstance(new_shape, int):
+        new_shape = (new_shape, new_shape)
+
+    # Scale ratio (new / old)
+    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+    if not scaleup:  # only scale down, do not scale up
+        r = min(r, 1.0)
+
+    # Compute padding
+    ratio = (r, r)  # width, height ratios
+    new_unpad = (int(round(shape[1] * r)), int(round(shape[0] * r)))  # (width, height) after scaling
+    dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # padding width and height
+    
+    if auto:  # minimum rectangle
+        dw, dh = np.mod(dw, stride), np.mod(dh, stride)  
+    elif scaleFill:  # stretch image to fill new shape
+        dw, dh = 0, 0
+        new_unpad = (new_shape[1], new_shape[0])
+        ratio = (new_shape[1] / shape[1], new_shape[0] / shape[0])  # width, height ratios
+
+    dw /= 2  # divide padding into 2 sides
+    dh /= 2
+
+    # Resize the image
+    if shape[::-1] != new_unpad:  
+        bgrd = cv2.resize(bgrd, new_unpad, interpolation=cv2.INTER_LINEAR)
+
+    # Compute padding (top, bottom, left, right)
+    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+
+    # Add border (for 4-channel image, we provide a 4-element color tuple)
+    bgrd = cv2.copyMakeBorder(bgrd, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
+
+    return bgrd, ratio, (dw, dh)
+
+
+
 def random_perspective(
     im, targets=(), segments=(), degrees=10, translate=0.1, scale=0.1, shear=10, perspective=0.0, border=(0, 0)
 ):
