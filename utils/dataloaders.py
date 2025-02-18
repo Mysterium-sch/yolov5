@@ -61,8 +61,8 @@ from utils.torch_utils import torch_distributed_zero_first
 # Parameters
 HELP_URL = "See https://docs.ultralytics.com/yolov5/tutorials/train_custom_data"
 IMG_FORMATS = "bmp", "dng", "jpeg", "jpg", "mpo", "png", "tif", "tiff", "webp", "pfm"  # include image suffixes
+DEPTH_FORMATS = "npy"  # include depth suffixes
 VID_FORMATS = "asf", "avi", "gif", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "ts", "wmv"  # include video suffixes
-DEPTH_FORMATS = "npy" # include video suffixes
 LOCAL_RANK = int(os.getenv("LOCAL_RANK", -1))  # https://pytorch.org/docs/stable/elastic/run.html
 RANK = int(os.getenv("RANK", -1))
 WORLD_SIZE = int(os.getenv("WORLD_SIZE", 1))
@@ -183,7 +183,7 @@ def create_dataloader(
         LOGGER.warning("WARNING ⚠️ --rect is incompatible with DataLoader shuffle, setting shuffle=False")
         shuffle = False
     with torch_distributed_zero_first(rank):  # init dataset *.cache only once if DDP
-        dataset = LoadImagesAndLabels(
+        dataset = LoadImages_Lidar_Labels(
             path,
             imgsz,
             batch_size,
@@ -214,7 +214,7 @@ def create_dataloader(
         sampler=sampler,
         drop_last=quad,
         pin_memory=PIN_MEMORY,
-        collate_fn=LoadImagesAndLabels.collate_fn4 if quad else LoadImagesAndLabels.collate_fn,
+        collate_fn=LoadImages_Lidar_Labels.collate_fn4 if quad else LoadImages_Lidar_Labels.collate_fn,
         worker_init_fn=seed_worker,
         generator=generator,
     ), dataset
@@ -433,10 +433,8 @@ class LoadImages:
 
 class LoadNumpy:
     """YOLOv5 image/video dataloader, i.e. `python detect.py --source image.jpg/vid.mp4`."""
-
     def __init__(self, img_path, depth_path, img_size=640, stride=32, auto=True, transforms=None, vid_stride=1):
         """Initializes YOLOv5 loader for images/videos, supporting glob patterns, directories, and lists of paths."""
-
         img_files = []
         for p in sorted(img_path) if isinstance(img_path, (list, tuple)) else [img_path]:
             p = str(Path(p).resolve())
@@ -449,7 +447,6 @@ class LoadNumpy:
             else:
                 raise FileNotFoundError(f"{p} does not exist")
             
-
         depth_files = []
         for p in sorted(depth_path) if isinstance(depth_path, (list, tuple)) else [depth_path]:
             p = str(Path(p).resolve())
@@ -462,18 +459,15 @@ class LoadNumpy:
             else:
                 raise FileNotFoundError(f"{p} does not exist")
             
-
         images = [x for x in img_path if x.split(".")[-1].lower() in IMG_FORMATS]
         distances = [x for x in depth_path if x.split(".")[-1].lower() in DEPTH_FORMATS]
         ni, nv = len(images), len(distances)
-
         if(ni == nv):
             self.nf = nv
         elif(ni > nv):
             self.nf = nv
         else:
             self.nf = ni
-
         self.img_size = img_size
         self.stride = stride
         self.im_files = images
@@ -484,26 +478,21 @@ class LoadNumpy:
         self.transforms = transforms  # optional
         self.vid_stride = vid_stride  # video frame-rate stride
         self.cap = None
-
         assert self.nf > 0, (
             f"No images or videos found in {p}. Supported formats are:\nimages: {IMG_FORMATS}\nvideos: {VID_FORMATS}"
         )
-
     def __iter__(self):
         """Initializes iterator by resetting count and returns the iterator object itself."""
         self.count = 0
         return self
-
     def __next__(self):
         """Advances to the next file in the dataset, raising StopIteration if at the end."""
         if self.count == self.nf:
             raise StopIteration
         im_path = self.im_files[self.count]
         dis_path = self.dis_files[self.count]
-
         im_name = os.path.splitext(os.path.basename(im_path))[0]
         dis_name = os.path.splitext(os.path.basename(dis_path))[0]
-
         assert im_name == dis_name, f"Filename mismatch: {im_name} != {dis_name}"
             
         # Read image
@@ -511,30 +500,23 @@ class LoadNumpy:
         im0 = cv2.imread(im_path)  # BGR
         assert im0 is not None, f"Image Not Found {im_path}"
         s = f"image {self.count}/{self.nf} {im_path}: "
-
         depth0 = np.load(dis_path)  # BGR
         assert depth0 is not None, f"Distance Not Found {dis_path}"
         d = f"image {self.count}/{self.nf} {dis_path}: "
-
         if depth0.shape[:2] != im0.shape[:2]:
             depth0 = cv2.resize(depth0, (im0.shape[1], im0.shape[0]))
-
             # If depth is single-channel, add an axis to match BGR channels
         if len(depth0.shape) == 2:
             depth0 = np.expand_dims(depth0, axis=-1)  # Convert (H, W) -> (H, W, 1)
-
             # Concatenate depth as the fourth channel
         bgrd = np.concatenate((im0, depth0), axis=-1)
-
         if self.transforms:
             bgrd_trans = self.transforms(bgrd)  # transforms
         else:
             bgrd_trans = letterbox_numpy(bgrd, self.img_size, stride=self.stride, auto=self.auto)[0]  # padded resize
             bgrd_trans = bgrd_trans.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
             bgrd_trans = np.ascontiguousarray(bgrd_trans)  # contiguous
-
         return im_path, dis_path, bgrd_trans, bgrd, self.cap, s, d
-
     def _new_video(self, path):
         """Initializes a new video capture object with path, frame count adjusted by stride, and orientation
         metadata.
@@ -544,7 +526,6 @@ class LoadNumpy:
         self.frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT) / self.vid_stride)
         self.orientation = int(self.cap.get(cv2.CAP_PROP_ORIENTATION_META))  # rotation degrees
         # self.cap.set(cv2.CAP_PROP_ORIENTATION_AUTO, 0)  # disable https://github.com/ultralytics/yolov5/issues/8493
-
     def _cv2_rotate(self, im):
         """Rotates a cv2 image based on its orientation; supports 0, 90, and 180 degrees rotations."""
         if self.orientation == 0:
@@ -554,12 +535,10 @@ class LoadNumpy:
         elif self.orientation == 90:
             return cv2.rotate(im, cv2.ROTATE_180)
         return im
-
     def __len__(self):
         """Returns the number of files in the dataset."""
         return self.nf  # number of files
-
-
+    
 class LoadStreams:
     """Loads and processes video streams for YOLOv5, supporting various sources including YouTube and IP cameras."""
 
@@ -664,8 +643,8 @@ def img2label_paths(img_paths):
     return [sb.join(x.rsplit(sa, 1)).rsplit(".", 1)[0] + ".txt" for x in img_paths]
 
 
-class LoadImagesAndLabels(Dataset):
-    """Loads images and their corresponding labels for training and validation in YOLOv5."""
+class LoadImages_Lidar_Labels(Dataset):
+    """Loads images and lidar and their corresponding labels for training and validation in YOLOv5."""
 
     cache_version = 0.6  # dataset labels *.cache version
     rand_interp_methods = [cv2.INTER_NEAREST, cv2.INTER_LINEAR, cv2.INTER_CUBIC, cv2.INTER_AREA, cv2.INTER_LANCZOS4]
@@ -687,6 +666,7 @@ class LoadImagesAndLabels(Dataset):
         prefix="",
         rank=-1,
         seed=0,
+        img_suffix='image', label_suffix='label', depth_suffix='depth',
     ):
         """Initializes the YOLOv5 dataset loader, handling images and their labels, caching, and preprocessing."""
         self.img_size = img_size
@@ -716,6 +696,7 @@ class LoadImagesAndLabels(Dataset):
                 else:
                     raise FileNotFoundError(f"{prefix}{p} does not exist")
             self.im_files = sorted(x.replace("/", os.sep) for x in f if x.split(".")[-1].lower() in IMG_FORMATS)
+            self.depth_files = sorted(x.replace("/", os.sep) for x in f if x.split(".")[-1].lower() in DEPTH_FORMATS)
             # self.img_files = sorted([x for x in f if x.suffix[1:].lower() in IMG_FORMATS])  # pathlib
             assert self.im_files, f"{prefix}No images found"
         except Exception as e:
@@ -755,6 +736,7 @@ class LoadImagesAndLabels(Dataset):
             include = np.array([len(x) >= min_items for x in self.labels]).nonzero()[0].astype(int)
             LOGGER.info(f"{prefix}{n - len(include)}/{n} images filtered from dataset")
             self.im_files = [self.im_files[i] for i in include]
+            self.depth_files = [self.depth_files[i] for i in include]
             self.label_files = [self.label_files[i] for i in include]
             self.labels = [self.labels[i] for i in include]
             self.segments = [self.segments[i] for i in include]
@@ -791,6 +773,7 @@ class LoadImagesAndLabels(Dataset):
             ar = s[:, 1] / s[:, 0]  # aspect ratio
             irect = ar.argsort()
             self.im_files = [self.im_files[i] for i in irect]
+            self.depth_files = [self.depth_files[i] for i in irect]
             self.label_files = [self.label_files[i] for i in irect]
             self.labels = [self.labels[i] for i in irect]
             self.segments = [self.segments[i] for i in irect]
@@ -813,7 +796,7 @@ class LoadImagesAndLabels(Dataset):
         if cache_images == "ram" and not self.check_cache_ram(prefix=prefix):
             cache_images = False
         self.ims = [None] * n
-        self.npy_files = [Path(f).with_suffix(".npy") for f in self.im_files]
+        self.npy_files = [Path(f).with_suffix(".npy") for sublist in [self.im_files, self.depth_files] for f in sublist]
         if cache_images:
             b, gb = 0, 1 << 30  # bytes of cached images, bytes per gigabytes
             self.im_hw0, self.im_hw = [None] * n, [None] * n
@@ -998,7 +981,7 @@ class LoadImagesAndLabels(Dataset):
                 im = cv2.resize(im, (math.ceil(w0 * r), math.ceil(h0 * r)), interpolation=interp)
             return im, (h0, w0), im.shape[:2]  # im, hw_original, hw_resized
         return self.ims[i], self.im_hw0[i], self.im_hw[i]  # im, hw_original, hw_resized
-
+    
     def cache_images_to_disk(self, i):
         """Saves an image to disk as an *.npy file for quicker loading, identified by index `i`."""
         f = self.npy_files[i]
@@ -1401,7 +1384,7 @@ class HUBDatasetStats:
             if self.data.get(split) is None:
                 self.stats[split] = None  # i.e. no test set
                 continue
-            dataset = LoadImagesAndLabels(self.data[split])  # load dataset
+            dataset = LoadImages_Lidar_Labels(self.data[split])  # load dataset
             x = np.array(
                 [
                     np.bincount(label[:, 0].astype(int), minlength=self.data["nc"])
@@ -1435,7 +1418,7 @@ class HUBDatasetStats:
         for split in "train", "val", "test":
             if self.data.get(split) is None:
                 continue
-            dataset = LoadImagesAndLabels(self.data[split])  # load dataset
+            dataset = LoadImages_Lidar_Labels(self.data[split])  # load dataset
             desc = f"{split} images"
             for _ in tqdm(ThreadPool(NUM_THREADS).imap(self._hub_ops, dataset.im_files), total=dataset.n, desc=desc):
                 pass
