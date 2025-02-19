@@ -218,7 +218,7 @@ class BaseModel(nn.Module):
 class DetectionModel(BaseModel):
     """YOLOv5 detection model class for object detection tasks, supporting custom configurations and anchors."""
 
-    def __init__(self, cfg="yolov5s.yaml", ch=3, nc=None, anchors=None):
+    def __init__(self, cfg="yolov5s.yaml", ch=4, nc=None, anchors=None):
         """Initializes YOLOv5 model with configuration file, input channels, number of classes, and custom anchors."""
         super().__init__()
         if isinstance(cfg, dict):
