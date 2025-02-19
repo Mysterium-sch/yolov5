@@ -684,6 +684,7 @@ class LoadImages_Lidar_Labels(Dataset):
             f = []  # image files
             for p in path if isinstance(path, list) else [path]:
                 p = Path(p)  # os-agnostic
+            
                 if p.is_dir():  # dir
                     f += glob.glob(str(p / "**" / "*.*"), recursive=True)
                     # f = list(p.rglob('*.*'))  # pathlib
@@ -695,6 +696,7 @@ class LoadImages_Lidar_Labels(Dataset):
                         # f += [p.parent / x.lstrip(os.sep) for x in t]  # to global path (pathlib)
                 else:
                     raise FileNotFoundError(f"{prefix}{p} does not exist")
+            
             self.im_files = sorted(x.replace("/", os.sep) for x in f if x.split(".")[-1].lower() in IMG_FORMATS)
             self.depth_files = sorted(x.replace("/", os.sep) for x in f if x.split(".")[-1].lower() in DEPTH_FORMATS)
             # self.img_files = sorted([x for x in f if x.suffix[1:].lower() in IMG_FORMATS])  # pathlib
