@@ -46,7 +46,7 @@ ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
 from ultralytics.utils.plotting import Annotator, colors, save_one_box
 
 from models.common import DetectMultiBackend
-from utils.dataloaders import IMG_FORMATS, VID_FORMATS, LoadImages, LoadScreenshots, LoadStreams, LoadNumpy
+from utils.dataloaders import IMG_FORMATS, VID_FORMATS, LoadImageDepth
 from utils.general import (
     LOGGER,
     Profile,
@@ -69,8 +69,9 @@ from utils.torch_utils import select_device, smart_inference_mode
 @smart_inference_mode()
 def run(
     weights=ROOT / "yolov5s.pt",  # model path or triton URL
-    source=ROOT / "data/images",  # file/dir/URL/glob/screen/0(webcam)
-    data=ROOT / "data/coco128.yaml",  # dataset.yaml path
+    im_source=ROOT / "data/images",  # file/dir/URL/glob/screen/0(webcam)
+    de_source=ROOT / "data/lidar",
+    data=ROOT / "data/data.yaml",  # dataset.yaml path
     imgsz=(640, 640),  # inference size (height, width)
     conf_thres=0.25,  # confidence threshold
     iou_thres=0.45,  # NMS IOU threshold
@@ -148,14 +149,11 @@ def run(
         run(source='data/videos/example.mp4', weights='yolov5s.pt', conf_thres=0.4, device='0')
         ```
     """
-    source = str(source)
-    save_img = not nosave and not source.endswith(".txt")  # save inference images
-    is_file = Path(source).suffix[1:] in (IMG_FORMATS + VID_FORMATS)
-    is_url = source.lower().startswith(("rtsp://", "rtmp://", "http://", "https://"))
-    webcam = source.isnumeric() or source.endswith(".streams") or (is_url and not is_file)
-    screenshot = source.lower().startswith("screen")
-    if is_url and is_file:
-        source = check_file(source)  # download
+    im_source = str(im_source)
+    de_source = str(de_source)
+    save_img = not nosave and not im_source.endswith(".txt")  # save inference images
+    im_is_file = Path(im_source).suffix[1:] in (IMG_FORMATS + VID_FORMATS)
+    de_is_file = Path(de_source).suffix[1:] in ("npy")
 
     # Directories
     save_dir = increment_path(Path(project) / name, exist_ok=exist_ok)  # increment run
@@ -169,20 +167,13 @@ def run(
 
     # Dataloader
     bs = 1  # batch_size
-    if webcam:
-        view_img = check_imshow(warn=True)
-        dataset = LoadStreams(source, img_size=imgsz, stride=stride, auto=pt, vid_stride=vid_stride)
-        bs = len(dataset)
-    elif screenshot:
-        dataset = LoadScreenshots(source, img_size=imgsz, stride=stride, auto=pt)
-    else:
-        dataset = LoadNumpy(source, img_size=imgsz, stride=stride, auto=pt, vid_stride=vid_stride)
+    dataset = LoadImageDepth(im_source, de_source, img_size=imgsz, stride=stride, auto=pt, vid_stride=vid_stride)
     vid_path, vid_writer = [None] * bs, [None] * bs
 
     # Run inference
-    model.warmup(imgsz=(1 if pt or model.triton else bs, 3, *imgsz))  # warmup
+    model.warmup(imgsz=(1 if pt or model.triton else bs, 4, *imgsz))  # warmup
     seen, windows, dt = 0, [], (Profile(device=device), Profile(device=device), Profile(device=device))
-    for path, im, im0s, vid_cap, s in dataset:
+    for path, im, im0s, de, depth0, vid_cap, s in dataset:
         with dt[0]:
             im = torch.from_numpy(im).to(model.device)
             im = im.half() if model.fp16 else im.float()  # uint8 to fp16/32
@@ -229,11 +220,7 @@ def run(
         # Process predictions
         for i, det in enumerate(pred):  # per image
             seen += 1
-            if webcam:  # batch_size >= 1
-                p, im0, frame = path[i], im0s[i].copy(), dataset.count
-                s += f"{i}: "
-            else:
-                p, im0, frame = path, im0s.copy(), getattr(dataset, "frame", 0)
+            p, im0, frame = path, im0s.copy(), getattr(dataset, "frame", 0)
 
             p = Path(p)  # to Path
             save_path = str(save_dir / p.name)  # im.jpg
