@@ -48,6 +48,8 @@ from models.common import (
     GhostBottleneck,
     GhostConv,
     Proto,
+    Silence,
+    SilenceChannel,
 )
 from models.experimental import MixConv2d
 from utils.autoanchor import check_anchor_order
@@ -218,7 +220,7 @@ class BaseModel(nn.Module):
 class DetectionModel(BaseModel):
     """YOLOv5 detection model class for object detection tasks, supporting custom configurations and anchors."""
 
-    def __init__(self, cfg="yolov5s.yaml", ch=4, nc=None, anchors=None):
+    def __init__(self, cfg="yolov5s.yaml", ch=3, nc=None, anchors=None):
         """Initializes YOLOv5 model with configuration file, input channels, number of classes, and custom anchors."""
         super().__init__()
         if isinstance(cfg, dict):
@@ -421,7 +423,10 @@ def parse_model(d, ch):
             DWConvTranspose2d,
             C3x,
         }:
-            c1, c2 = ch[f], args[0]
+            c1 = ch[f]
+
+            c2 = args[0]
+
             if c2 != no:  # if not output
                 c2 = make_divisible(c2 * gw, ch_mul)
 
@@ -433,6 +438,8 @@ def parse_model(d, ch):
             args = [ch[f]]
         elif m is Concat:
             c2 = sum(ch[x] for x in f)
+        elif m is SilenceChannel:
+            c2 = args[0] - args[1]
         # TODO: channel, gw, gd
         elif m in {Detect, Segment}:
             args.append([ch[x] for x in f])
@@ -446,7 +453,6 @@ def parse_model(d, ch):
             c2 = ch[f] // args[0] ** 2
         else:
             c2 = ch[f]
-
         m_ = nn.Sequential(*(m(*args) for _ in range(n))) if n > 1 else m(*args)  # module
         t = str(m)[8:-2].replace("__main__.", "")  # module type
         np = sum(x.numel() for x in m_.parameters())  # number params
