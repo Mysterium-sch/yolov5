@@ -270,6 +270,19 @@ class C3TR(C3):
         c_ = int(c2 * e)
         self.m = TransformerBlock(c_, c_, 4, n)
 
+class Silence(nn.Module):
+    def __init__(self):
+        super(Silence, self).__init__()
+    def forward(self, x):
+        return x
+
+class SilenceChannel(nn.Module):
+    def __init__(self, c_end, c_start):
+        super(SilenceChannel, self).__init__()
+        self.c_start=c_start
+        self.c_end = c_end
+    def forward(self, x):
+        return x[...,self.c_start:self.c_end, :,:]
 
 class C3SPP(C3):
     """Extends the C3 module with an SPP layer for enhanced spatial feature extraction and customizable channels."""
