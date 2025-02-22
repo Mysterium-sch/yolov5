@@ -197,16 +197,14 @@ def train(hyp, opt, device, callbacks):
             weights, epochs, hyp, batch_size = opt.weights, opt.epochs, opt.hyp, opt.batch_size
 
     # Config
-    #plots = not evolve and not opt.noplots  # create plots
+    plots = not evolve and not opt.noplots  # create plots
     cuda = device.type != "cpu"
     init_seeds(opt.seed + 1 + RANK, deterministic=True)
     with torch_distributed_zero_first(LOCAL_RANK):
         data_dict = data_dict or check_dataset(data)  # check if None
-
     train_path, val_path = data_dict["train"], data_dict["val"]
-    channels = data_dict["channels"]
-
     nc = 1 if single_cls else int(data_dict["nc"])  # number of classes
+    channels = data_dict["channels"]
     names = {0: "item"} if single_cls and len(data_dict["names"]) != 1 else data_dict["names"]  # class names
     is_coco = isinstance(val_path, str) and val_path.endswith("coco/val2017.txt")  # COCO dataset
 
@@ -304,12 +302,7 @@ def train(hyp, opt, device, callbacks):
         shuffle=True,
         seed=opt.seed,
     )
-        
     labels = np.concatenate(dataset.labels, 0)
-    rgbd, (h0, w0), (h, w) = dataset.load_image(1)
-    print((np.array(rgbd).shape))
-
-
     mlc = int(labels[:, 0].max())  # max label class
     assert mlc < nc, f"Label class {mlc} exceeds nc={nc} in {data}. Possible class labels are 0-{nc - 1}"
 
@@ -389,15 +382,24 @@ def train(hyp, opt, device, callbacks):
         if RANK != -1:
             train_loader.sampler.set_epoch(epoch)
         pbar = enumerate(train_loader)
+        
         LOGGER.info(("\n" + "%11s" * 7) % ("Epoch", "GPU_mem", "box_loss", "obj_loss", "cls_loss", "Instances", "Size"))
         if RANK in {-1, 0}:
             pbar = tqdm(pbar, total=nb, bar_format=TQDM_BAR_FORMAT)  # progress bar
         optimizer.zero_grad()
-
-        for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
+        for i, (imgs, de, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             callbacks.run("on_train_batch_start")
+            print("\n", de[0].shape, "\n")
+            np.save("/home/lixion/stuff/depth", de[0].numpy()) 
+             # Assuming it's a grayscale image
+
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking=True).float() / 255  # uint8 to float32, 0-255 to 0.0-1.0
+            de = de.to(device, non_blocking=True).float() / 256
+
+            #combine depth and images
+            de_expanded = de.unsqueeze(1)
+            combined = torch.cat((imgs, de_expanded), dim=1)
 
             # Warmup
             if ni <= nw:
@@ -411,16 +413,16 @@ def train(hyp, opt, device, callbacks):
                         x["momentum"] = np.interp(ni, xi, [hyp["warmup_momentum"], hyp["momentum"]])
 
             # Multi-scale
-            if opt.multi_scale:
-                sz = random.randrange(int(imgsz * 0.5), int(imgsz * 1.5) + gs) // gs * gs  # size
-                sf = sz / max(imgs.shape[2:])  # scale factor
-                if sf != 1:
-                    ns = [math.ceil(x * sf / gs) * gs for x in imgs.shape[2:]]  # new shape (stretched to gs-multiple)
-                    imgs = nn.functional.interpolate(imgs, size=ns, mode="bilinear", align_corners=False)
+            #if opt.multi_scale:
+            #    sz = random.randrange(int(imgsz * 0.5), int(imgsz * 1.5) + gs) // gs * gs  # size
+            #    sf = sz / max(imgs.shape[2:])  # scale factor
+            #    if sf != 1:
+            #        ns = [math.ceil(x * sf / gs) * gs for x in imgs.shape[2:]]  # new shape (stretched to gs-multiple)
+            #        imgs = nn.functional.interpolate(imgs, size=ns, mode="bilinear", align_corners=False)
 
             # Forward
             with torch.cuda.amp.autocast(amp):
-                pred = model(imgs)  # forward
+                pred = model(combined)  # forward
                 loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
                 if RANK != -1:
                     loss *= WORLD_SIZE  # gradient averaged between devices in DDP mode
@@ -449,7 +451,7 @@ def train(hyp, opt, device, callbacks):
                     ("%11s" * 2 + "%11.4g" * 5)
                     % (f"{epoch}/{epochs - 1}", mem, *mloss, targets.shape[0], imgs.shape[-1])
                 )
-                callbacks.run("on_train_batch_end", model, ni, imgs, targets, paths, list(mloss))
+                callbacks.run("on_train_batch_end", model, ni, imgs, de, targets, paths, list(mloss))
                 if callbacks.stop_training:
                     return
             # end batch ------------------------------------------------------------------------------------------------
@@ -538,7 +540,7 @@ def train(hyp, opt, device, callbacks):
                         save_dir=save_dir,
                         save_json=is_coco,
                         verbose=True,
-                        #plots=plots,
+                        plots=plots,
                         callbacks=callbacks,
                         compute_loss=compute_loss,
                     )  # val best model with plots
@@ -888,7 +890,7 @@ def main(opt, callbacks=Callbacks()):
         best_individual = population[best_index]
         print("Best solution found:", best_individual)
         # Plot results
-        #plot_evolve(evolve_csv)
+        plot_evolve(evolve_csv)
         LOGGER.info(
             f"Hyperparameter evolution finished {opt.evolve} generations\n"
             f"Results saved to {colorstr('bold', save_dir)}\n"
