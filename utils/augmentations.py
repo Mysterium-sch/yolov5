@@ -37,7 +37,6 @@ class Albumentations:
                 A.CLAHE(p=0.01),
                 A.RandomBrightnessContrast(p=0.0),
                 A.RandomGamma(p=0.0),
-                A.ImageCompression(quality_lower=75, p=0.0),
             ]  # transforms
             self.transform = A.Compose(T, bbox_params=A.BboxParams(format="yolo", label_fields=["class_labels"]))
 
@@ -47,12 +46,12 @@ class Albumentations:
         except Exception as e:
             LOGGER.info(f"{prefix}{e}")
 
-    def __call__(self, im, labels, p=1.0):
+    def __call__(self, im, de, labels, p=1.0):
         """Applies transformations to an image and labels with probability `p`, returning updated image and labels."""
         if self.transform and random.random() < p:
             new = self.transform(image=im, bboxes=labels[:, 1:], class_labels=labels[:, 0])  # transformed
             im, labels = new["image"], np.array([[c, *b] for c, b in zip(new["class_labels"], new["bboxes"])])
-        return im, labels
+        return im, de, labels
 
 
 def normalize(x, mean=IMAGENET_MEAN, std=IMAGENET_STD, inplace=False):
@@ -75,18 +74,8 @@ def augment_hsv(im, hgain=0.5, sgain=0.5, vgain=0.5):
     """Applies HSV color-space augmentation to an image with random gains for hue, saturation, and value."""
     if hgain or sgain or vgain:
         r = np.random.uniform(-1, 1, 3) * [hgain, sgain, vgain] + 1  # random gains
-        d = im[:, :, 3]
-        image = im[:, :, :3]
-
-        if image.dtype != np.uint8:
-            # If image is in float64 format, scale it to [0, 255] and convert to uint8
-            if image.dtype == np.float64:
-                image = np.clip(image * 255, 0, 255).astype(np.uint8)
-            else:
-                raise ValueError("Unsupported image data type for color conversion")
-
-        hue, sat, val = cv2.split(cv2.cvtColor(image, cv2.COLOR_BGR2HSV))
-        dtype = image.dtype  # uint8
+        hue, sat, val = cv2.split(cv2.cvtColor(im, cv2.COLOR_BGR2HSV))
+        dtype = im.dtype  # uint8
 
         x = np.arange(0, 256, dtype=r.dtype)
         lut_hue = ((x * r[0]) % 180).astype(dtype)
@@ -94,10 +83,7 @@ def augment_hsv(im, hgain=0.5, sgain=0.5, vgain=0.5):
         lut_val = np.clip(x * r[2], 0, 255).astype(dtype)
 
         im_hsv = cv2.merge((cv2.LUT(hue, lut_hue), cv2.LUT(sat, lut_sat), cv2.LUT(val, lut_val)))
-        cv2.cvtColor(im_hsv, cv2.COLOR_HSV2BGR, dst=image)  # no return needed
-
-        im[:, :, :3] = image
-        im[:, :, 3] = d
+        cv2.cvtColor(im_hsv, cv2.COLOR_HSV2BGR, dst=im)  # no return needed
 
 
 def hist_equalize(im, clahe=True, bgr=False):
@@ -164,42 +150,42 @@ def letterbox(im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleF
     im = cv2.copyMakeBorder(im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
     return im, ratio, (dw, dh)
 
-def letterbox_numpy(bgrd, new_shape=(640, 640), color=(114, 114, 114, 0), auto=True, scaleFill=False, scaleup=True, stride=32):
-    """Resizes and pads a 4-channel (BGRD) image to new_shape while maintaining aspect ratio."""
-    
-    shape = bgrd.shape[:2]  # current shape [height, width]
-    
+
+def letterbox_de(de, new_shape=(640, 640), color=114, auto=True, scaleFill=False, scaleup=True, stride=32):
+    """Resizes and pads image to new_shape with stride-multiple constraints, returns resized image, ratio, padding."""
+    shape = de.shape[:2]  # current shape [height, width]
     if isinstance(new_shape, int):
         new_shape = (new_shape, new_shape)
+
     # Scale ratio (new / old)
     r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
-    if not scaleup:  # only scale down, do not scale up
+    if not scaleup:  # only scale down, do not scale up (for better val mAP)
         r = min(r, 1.0)
+
     # Compute padding
-    ratio = (r, r)  # width, height ratios
-    new_unpad = (int(round(shape[1] * r)), int(round(shape[0] * r)))  # (width, height) after scaling
-    dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # padding width and height
-    
+    ratio = r, r  # width, height ratios
+    new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+    dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
     if auto:  # minimum rectangle
-        dw, dh = np.mod(dw, stride), np.mod(dh, stride)  
-    elif scaleFill:  # stretch image to fill new shape
-        dw, dh = 0, 0
+        dw, dh = np.mod(dw, stride), np.mod(dh, stride)  # wh padding
+    elif scaleFill:  # stretch
+        dw, dh = 0.0, 0.0
         new_unpad = (new_shape[1], new_shape[0])
-        ratio = (new_shape[1] / shape[1], new_shape[0] / shape[0])  # width, height ratios
+        ratio = new_shape[1] / shape[1], new_shape[0] / shape[0]  # width, height ratios
+
     dw /= 2  # divide padding into 2 sides
     dh /= 2
-    # Resize the image
-    if shape[::-1] != new_unpad:  
-        bgrd = cv2.resize(bgrd, new_unpad, interpolation=cv2.INTER_LINEAR)
-    # Compute padding (top, bottom, left, right)
+
+    if shape[::-1] != new_unpad:  # resize
+        de = cv2.resize(de, new_unpad, interpolation=cv2.INTER_LINEAR)
     top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
     left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-    # Add border (for 4-channel image, we provide a 4-element color tuple)
-    bgrd = cv2.copyMakeBorder(bgrd, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
-    return bgrd, ratio, (dw, dh)
+    de = cv2.copyMakeBorder(de, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
+    return de, ratio, (dw, dh)
+
 
 def random_perspective(
-    im, targets=(), segments=(), degrees=10, translate=0.1, scale=0.1, shear=10, perspective=0.0, border=(0, 0)
+    im, de, targets=(), segments=(), degrees=10, translate=0.1, scale=0.1, shear=10, perspective=0.0, border=(0, 0)
 ):
     # torchvision.transforms.RandomAffine(degrees=(-10, 10), translate=(0.1, 0.1), scale=(0.9, 1.1), shear=(-10, 10))
     # targets = [cls, xyxy]
@@ -240,8 +226,10 @@ def random_perspective(
     if (border[0] != 0) or (border[1] != 0) or (M != np.eye(3)).any():  # image changed
         if perspective:
             im = cv2.warpPerspective(im, M, dsize=(width, height), borderValue=(114, 114, 114))
+            de = cv2.warpPerspective(de, M, dsize=(width, height), borderValue=114)
         else:  # affine
             im = cv2.warpAffine(im, M[:2], dsize=(width, height), borderValue=(114, 114, 114))
+            de = cv2.warpAffine(de, M[:2], dsize=(width, height), borderValue=114)
 
     if n := len(targets):
         use_segments = any(x.any() for x in segments) and len(segments) == n
@@ -277,7 +265,7 @@ def random_perspective(
         targets = targets[i]
         targets[:, 1:5] = new[i]
 
-    return im, targets
+    return im, de, targets
 
 
 def copy_paste(im, labels, segments, p=0.5):
