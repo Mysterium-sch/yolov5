@@ -167,8 +167,6 @@ def plot_images(images, de, targets, paths=None, fname='images.jpg', names=None,
     bs = min(bs, max_subplots)  # limit plot images
     ns = np.ceil(bs ** 0.5)  # number of subplots (square)
 
-    np.save("/home/lixion/stuff/depth", de[0])
-
     # Build Image
     mosaic = np.full((int(ns * h), int(ns * w), 3), 255, dtype=np.uint8)  # init
     for i, im in enumerate(images):

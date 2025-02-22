@@ -390,12 +390,11 @@ def train(hyp, opt, device, callbacks):
         for i, (imgs, de, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             callbacks.run("on_train_batch_start")
             print("\n", de[0].shape, "\n")
-            np.save("/home/lixion/stuff/depth", de[0].numpy()) 
              # Assuming it's a grayscale image
 
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking=True).float() / 255  # uint8 to float32, 0-255 to 0.0-1.0
-            de = de.to(device, non_blocking=True).float() / 256
+            de = de.to(device, non_blocking=True).float() / de.max()
 
             #combine depth and images
             de_expanded = de.unsqueeze(1)
