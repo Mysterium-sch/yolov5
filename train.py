@@ -394,7 +394,7 @@ def train(hyp, opt, device, callbacks):
 
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking=True).float() / 255  # uint8 to float32, 0-255 to 0.0-1.0
-            de = de.to(device, non_blocking=True).float() / de.max()
+            de = de.to(device, non_blocking=True).float() / 255
 
             #combine depth and images
             de_expanded = de.unsqueeze(1)
